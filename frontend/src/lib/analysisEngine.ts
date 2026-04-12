@@ -173,10 +173,12 @@ export function analyzeMock(reading: SampleReading): AnalysisResult {
   };
 }
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
+
 // Call real FastAPI backend — falls back to mock on failure
 export async function analyzeWithApi(reading: SampleReading): Promise<AnalysisResult> {
   try {
-    const res = await fetch('http://127.0.0.1:8000/predict', {
+    const res = await fetch(`${API_URL}/predict`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reading.features),

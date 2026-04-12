@@ -14,9 +14,14 @@ app = FastAPI(
 )
 
 # Allow the Next.js dev server (and any localhost origin) to call the API
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -107,5 +112,5 @@ def predict_fault(data: VibrationFeatures):
 
 if __name__ == "__main__":
     import uvicorn
-    # Execute natively via python app.py if desired
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)

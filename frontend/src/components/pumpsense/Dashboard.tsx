@@ -73,7 +73,8 @@ export function Dashboard() {
 
   // ── API health check ───────────────────────────────────────────────────
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/', { signal: AbortSignal.timeout(2000) })
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
+    fetch(`${apiUrl}/`, { signal: AbortSignal.timeout(2000) })
       .then(() => setApiAvailable(true))
       .catch(() => setApiAvailable(false));
   }, []);

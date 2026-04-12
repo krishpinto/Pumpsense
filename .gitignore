@@ -11,7 +11,9 @@ backend/*.egg-info/
 backend/venv/
 backend/.env
 backend/*.pyc
-backend/processed_data/
+# Keep processed_data but ignore large non-essential files
+backend/processed_data/*.png
+backend/processed_data/*.csv
 
 # General
 .DS_Store

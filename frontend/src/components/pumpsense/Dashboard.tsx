@@ -3,12 +3,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Activity, AlertCircle, AlertTriangle, CheckCircle2,
-  Cpu, Database, Play, Pause, RotateCcw, Zap, Radio, Upload, BarChart2,
+  Cpu, Database, Zap, Upload, BarChart2,
   Wifi, WifiOff,
 } from 'lucide-react';
 
-import { SAMPLE_READINGS, LIVE_FEED_SEQUENCE, SampleReading, FaultLabel, FAULT_LABELS } from '@/lib/sampleData';
-import { analyzeMock, analyzeWithApi, AnalysisResult, TrendPoint } from '@/lib/analysisEngine';
+import { SAMPLE_READINGS, SampleReading, FaultLabel, FAULT_LABELS } from '@/lib/sampleData';
+import { analyzeMock, analyzeWithApi, analyzeFromUpload, AnalysisResult, TrendPoint } from '@/lib/analysisEngine';
 
 import { PumpAsset } from './PumpAsset';
 import { SignalChart } from './SignalChart';
@@ -35,15 +35,11 @@ export function Dashboard() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [trendHistory, setTrendHistory] = useState<TrendPoint[]>([]);
   const [eventLog, setEventLog] = useState<AnalysisResult[]>([]);
-  const [isLive, setIsLive] = useState(false);
-  const [liveRunning, setLiveRunning] = useState(false);
-  const [liveFeedIndex, setLiveFeedIndex] = useState(0);
   const [apiMode, setApiMode] = useState(false);
   const [apiAvailable, setApiAvailable] = useState<boolean | null>(null);
-  const [mode, setMode] = useState<'manual' | 'live'>('manual');
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
-  const liveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const readingIndexRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Helpers ────────────────────────────────────────────────────────────
   const selectedReading = SAMPLE_READINGS.find(r => r.id === selectedId)!;
@@ -79,38 +75,31 @@ export function Dashboard() {
       .catch(() => setApiAvailable(false));
   }, []);
 
-  // ── Live feed interval ────────────────────────────────────────────────
-  useEffect(() => {
-    if (liveRunning) {
-      liveIntervalRef.current = setInterval(() => {
-        const seqId = LIVE_FEED_SEQUENCE[readingIndexRef.current % LIVE_FEED_SEQUENCE.length];
-        const reading = SAMPLE_READINGS.find(r => r.id === seqId)!;
-        setSelectedId(seqId);
-        runAnalysis(reading);
-        readingIndexRef.current += 1;
-        setLiveFeedIndex(readingIndexRef.current);
-      }, 3500);
-    } else {
-      if (liveIntervalRef.current) clearInterval(liveIntervalRef.current);
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setUploadError(null);
+    setIsAnalyzing(true);
+    try {
+      const res = await analyzeFromUpload(file);
+      setResult(res);
+      setTrendHistory(prev => {
+        const next: TrendPoint = {
+          index: prev.length + 1,
+          label: file.name.replace('.xlsx', '').substring(0, 8),
+          healthScore: res.healthScore,
+          fault: res.primaryFault,
+          severity: res.severity,
+        };
+        return [...prev.slice(-19), next];
+      });
+      setEventLog(prev => [...prev, res]);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setIsAnalyzing(false);
     }
-    return () => { if (liveIntervalRef.current) clearInterval(liveIntervalRef.current); };
-  }, [liveRunning, runAnalysis]);
-
-  const handleStartLive = () => {
-    setMode('live');
-    setIsLive(true);
-    setLiveRunning(true);
-  };
-  const handlePauseLive = () => setLiveRunning(prev => !prev);
-  const handleResetLive = () => {
-    setLiveRunning(false);
-    setIsLive(false);
-    setMode('manual');
-    readingIndexRef.current = 0;
-    setLiveFeedIndex(0);
-    setResult(null);
-    setTrendHistory([]);
-    setEventLog([]);
   };
 
   // ── Status display ─────────────────────────────────────────────────────
@@ -153,14 +142,6 @@ export function Dashboard() {
         </div>
 
         <div className="ml-auto flex items-center gap-3">
-          {/* Live indicator */}
-          {isLive && (
-            <div className="flex items-center gap-1.5 bg-red-600/20 border border-red-500/30 rounded-full px-3 py-1">
-              <Radio className="w-3 h-3 text-red-400 animate-pulse" />
-              <span className="text-xs text-red-300 font-medium">LIVE</span>
-            </div>
-          )}
-
           {/* API toggle */}
           <button
             onClick={() => setApiMode(p => !p)}
@@ -194,7 +175,7 @@ export function Dashboard() {
           {/* Pump asset */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 flex flex-col items-center gap-2">
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Asset Status</div>
-            <PumpAsset classId={result?.classId ?? 0} isLive={isLive} />
+            <PumpAsset classId={result?.classId ?? 0} isLive={false} />
             <div className={`mt-1 rounded-full px-4 py-1.5 text-sm font-bold ${result ? `${result.severityBg} ${result.severityColor} border ${result.severityBorder}` : 'bg-slate-100 text-slate-500'}`}>
               {severity}
             </div>
@@ -206,123 +187,69 @@ export function Dashboard() {
             )}
           </div>
 
-          {/* Mode toggle */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-1 grid grid-cols-2 gap-1">
-            {(['manual', 'live'] as const).map(m => (
-              <button
-                key={m}
-                onClick={() => { if (m === 'manual' && isLive) handleResetLive(); setMode(m); }}
-                className={`rounded-lg py-2 text-xs font-semibold transition-all capitalize ${
-                  mode === m
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                {m === 'manual' ? 'Manual' : 'Live Feed'}
-              </button>
-            ))}
-          </div>
-
           {/* Controls */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 flex flex-col gap-3">
-
-            {mode === 'manual' ? (
-              <>
-                <div>
-                  <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
-                    Select Sample Reading
-                  </label>
-                  {/* Group by label */}
-                  {([0, 1, 2, 3] as FaultLabel[]).map(label => {
-                    const group = SAMPLE_READINGS.filter(r => r.label === label);
-                    return (
-                      <div key={label} className="mb-2">
-                        <div className="text-[10px] text-slate-400 font-medium mb-1 pl-1">
-                          {FAULT_LABELS[label]}
-                        </div>
-                        {group.map(r => (
-                          <button
-                            key={r.id}
-                            onClick={() => setSelectedId(r.id)}
-                            className={`w-full text-left text-xs px-2.5 py-1.5 rounded-md mb-0.5 transition-all ${
-                              selectedId === r.id
-                                ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200'
-                                : 'text-slate-600 hover:bg-slate-50'
-                            }`}
-                          >
-                            {r.displayName.split(' — ')[1] ?? r.file}
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <button
-                  onClick={() => runAnalysis(selectedReading)}
-                  disabled={isAnalyzing}
-                  className="w-full py-2.5 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  {isAnalyzing
-                    ? <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />Analyzing…</>
-                    : <><BarChart2 className="w-4 h-4" />Analyze Reading</>}
-                </button>
-
-                <label className="w-full py-2 rounded-lg border border-dashed border-slate-300 text-xs text-slate-500 flex items-center justify-center gap-1.5 cursor-pointer hover:border-blue-400 hover:text-blue-500 transition-colors">
-                  <Upload className="w-3.5 h-3.5" />
-                  Upload .xlsx (coming soon)
-                </label>
-              </>
-            ) : (
-              <>
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mb-1">
-                  Live Feed Controls
-                </div>
-                <div className="flex flex-col gap-2">
-                  {!isLive ? (
-                    <button
-                      onClick={handleStartLive}
-                      className="w-full py-2.5 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 active:scale-95 transition-all flex items-center justify-center gap-2"
-                    >
-                      <Radio className="w-4 h-4" />
-                      Start Live Feed
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handlePauseLive}
-                      className={`w-full py-2.5 rounded-lg text-white text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
-                        liveRunning ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-500 hover:bg-emerald-600'
-                      }`}
-                    >
-                      {liveRunning ? <><Pause className="w-4 h-4" />Pause Feed</> : <><Play className="w-4 h-4" />Resume Feed</>}
-                    </button>
-                  )}
-                  <button
-                    onClick={handleResetLive}
-                    className="w-full py-2 rounded-lg border border-slate-200 text-slate-600 text-sm hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Reset Replay
-                  </button>
-                </div>
-
-                {isLive && (
-                  <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5 text-xs space-y-1">
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Reading</span>
-                      <span className="font-mono font-semibold text-slate-700">#{liveFeedIndex}</span>
+            <div>
+              <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                Select Sample Reading
+              </label>
+              {([0, 1, 2, 3] as FaultLabel[]).map(label => {
+                const group = SAMPLE_READINGS.filter(r => r.label === label);
+                return (
+                  <div key={label} className="mb-2">
+                    <div className="text-[10px] text-slate-400 font-medium mb-1 pl-1">
+                      {FAULT_LABELS[label]}
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Interval</span>
-                      <span className="font-mono text-slate-700">3.5s</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Queue</span>
-                      <span className="font-mono text-slate-700">{LIVE_FEED_SEQUENCE.length} samples</span>
-                    </div>
+                    {group.map(r => (
+                      <button
+                        key={r.id}
+                        onClick={() => setSelectedId(r.id)}
+                        className={`w-full text-left text-xs px-2.5 py-1.5 rounded-md mb-0.5 transition-all ${
+                          selectedId === r.id
+                            ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        {r.displayName.split(' — ')[1] ?? r.file}
+                      </button>
+                    ))}
                   </div>
-                )}
-              </>
+                );
+              })}
+            </div>
+
+            <button
+              onClick={() => runAnalysis(selectedReading)}
+              disabled={isAnalyzing}
+              className="w-full py-2.5 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isAnalyzing
+                ? <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />Analyzing…</>
+                : <><BarChart2 className="w-4 h-4" />Analyze Reading</>}
+            </button>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={handleFileUpload}
+            />
+            <label
+              onClick={() => !isAnalyzing && fileInputRef.current?.click()}
+              className={`w-full py-2 rounded-lg border border-dashed text-xs flex items-center justify-center gap-1.5 transition-colors ${
+                isAnalyzing
+                  ? 'border-slate-200 text-slate-300 cursor-not-allowed'
+                  : 'border-slate-300 text-slate-500 cursor-pointer hover:border-blue-400 hover:text-blue-500'
+              }`}
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Upload .xlsx File
+            </label>
+            {uploadError && (
+              <div className="text-[11px] text-red-500 bg-red-50 border border-red-200 rounded-md px-2.5 py-1.5">
+                {uploadError}
+              </div>
             )}
           </div>
 
@@ -332,7 +259,7 @@ export function Dashboard() {
               Ingestion Pipeline
             </div>
             {[
-              { label: 'MQTT Ingestion', active: isLive },
+              { label: 'Data Ingestion', active: isAnalyzing },
               { label: 'Feature Extraction', active: !!result || isAnalyzing },
               { label: 'ML Inference', active: !!result || isAnalyzing },
               { label: 'Risk Scoring', active: !!result },

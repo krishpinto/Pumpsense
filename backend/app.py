@@ -1,10 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import joblib
 import pandas as pd
 import numpy as np
 import os
+import tempfile
+import shutil
+
+from extract_features import extract_features_from_excel
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -104,6 +108,44 @@ def predict_fault(data: VibrationFeatures):
         "class_id": int(prediction),
         "confidence_matrix": prob_dict
     }
+
+@app.post("/upload-excel")
+async def upload_excel(file: UploadFile = File(...)):
+    if rf_model is None:
+        raise HTTPException(status_code=500, detail="Model not loaded.")
+
+    if not file.filename or not file.filename.endswith('.xlsx'):
+        raise HTTPException(status_code=422, detail="Please upload a valid .xlsx file.")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+
+    try:
+        features = extract_features_from_excel(tmp_path)
+        if features is None:
+            raise HTTPException(status_code=422, detail="Could not extract features from file. Check that it contains valid vibration data.")
+
+        FEATURE_KEYS = ['max_amp', 'mean_mag', 'var_mag', 'spectral_energy',
+                        'spectral_centroid', 'spectral_spread', 'peak_f1', 'peak_f2', 'peak_f3']
+
+        input_data = pd.DataFrame([{k: features[k] for k in FEATURE_KEYS}])
+        prediction = rf_model.predict(input_data)[0]
+        probabilities = rf_model.predict_proba(input_data)[0]
+
+        prob_dict = {LABEL_MAP[i]: f"{round(prob * 100, 2)}%" for i, prob in enumerate(probabilities)}
+
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "primary_classification": LABEL_MAP[int(prediction)],
+            "class_id": int(prediction),
+            "confidence_matrix": prob_dict,
+            "features": {k: float(features[k]) for k in FEATURE_KEYS},
+        }
+    finally:
+        os.unlink(tmp_path)
+
 
 if __name__ == "__main__":
     import uvicorn

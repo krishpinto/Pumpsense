@@ -231,6 +231,65 @@ export async function analyzeWithApi(reading: SampleReading): Promise<AnalysisRe
   }
 }
 
+export async function analyzeFromUpload(file: File): Promise<AnalysisResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await fetch(`${API_URL}/upload-excel`, {
+    method: 'POST',
+    body: formData,
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? 'Upload failed');
+  }
+
+  const data = await res.json();
+  const classId = data.class_id as FaultLabel;
+  const si = SEVERITY_INFO[classId];
+  const sup = SUPERVISOR_CONFIG[classId];
+
+  const reading: SampleReading = {
+    id: `upload_${Date.now()}`,
+    file: data.filename,
+    label: classId,
+    displayName: `Upload — ${data.filename}`,
+    features: data.features,
+  };
+
+  const confidence: ConfidenceEntry[] = (
+    Object.keys(FAULT_LABELS) as unknown as FaultLabel[]
+  ).map(cid => ({
+    label: FAULT_LABELS[cid],
+    classId: cid,
+    value: parseFloat(data.confidence_matrix[FAULT_LABELS[cid]]?.replace('%', '') ?? '0'),
+  }));
+
+  return {
+    reading,
+    timestamp: new Date().toISOString(),
+    healthScore: generateHealthScore(classId, Date.now() % 10),
+    primaryFault: data.primary_classification,
+    classId,
+    severity: si.severity,
+    severityColor: si.color,
+    severityBg: si.bg,
+    severityBorder: si.border,
+    confidence,
+    fftData: generateFftData(reading.features, classId),
+    explanation: EXPLANATIONS[classId](reading.features),
+    recommendedAction: sup.action,
+    urgency: sup.urgency,
+    assignedTeam: sup.team,
+    riskIfDelayed: sup.risk,
+    workflowState: sup.workflow,
+    nextAction: sup.next,
+    apiMode: true,
+  };
+}
+
 export interface TrendPoint {
   index: number;
   label: string;

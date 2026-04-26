@@ -107,7 +107,3 @@ export const SAMPLE_READINGS: SampleReading[] = [
   },
 ];
 
-// Ordered replay sequence for live feed — escalating fault scenario
-export const LIVE_FEED_SEQUENCE: string[] = [
-  'h2', 'h1', 'h3', 'ir1', 'h1', 'ir2', 'ir3', 'or1', 'or2', 'or3', 'cd1', 'cd2',
-];
